@@ -13,6 +13,16 @@ export default function Home() {
     const [props, setProps] = useState(null);
     const [m, setM] = useState(null);
 
+    // 2025 TIGERweb tracts → filter to Miami-Dade, return WGS84 GeoJSON
+    const TRACTS_URL =
+        "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/0/query" +
+        "?where=STATE%3D'12'%20AND%20COUNTY%3D'086'&outFields=*&outSR=4326&f=geojson";
+
+    // 2025 TIGERweb block groups (optional, finer grid)
+    const BGS_URL =
+        "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/1/query" +
+        "?where=STATE%3D'12'%20AND%20COUNTY%3D'086'&outFields=*&outSR=4326&f=geojson";
+
     useEffect(() => {
         if (!ref.current) return;
         const map = new maplibregl.Map({
@@ -30,6 +40,18 @@ export default function Home() {
                 type: "geojson",
                 data: "https://gisms.miamidade.gov/arcgis/rest/services/CommissionDistrict_overall/MapServer/13/query?where=1%3D1&outFields=*&outSR=4326&f=geojson",
             });
+
+            map.addSource("census-tracts", {
+                type: "geojson",
+                data: TRACTS_URL,
+                promoteId: "GEOID",
+            } as any);
+
+            map.addSource("census-bgs", {
+                type: "geojson",
+                data: BGS_URL,
+                promoteId: "GEOID",
+            } as any);
 
             // --- find the first symbol layer with text to insert 3D below labels ---
             const layers = map.getStyle().layers || [];
@@ -50,7 +72,7 @@ export default function Home() {
                 } as any);
             }
 
-            // --- 3D buildings (kept from your code; now dark-blue gradient) ---
+            // --- 3D buildings ---
             if (!map.getLayer("3d-buildings")) {
                 map.addLayer(
                     {
@@ -99,30 +121,55 @@ export default function Home() {
                 );
             }
 
-            // --- Apply dark-blue theme to the rest of the map ---
             applyDarkBlueTheme(map);
-
-            let hoveredDistrictId = null;
-            // Orange palette (complement to blue)
 
             const base = "#d32f2f"; // base red
             const hover = "#8b0000"; // darker red on hover
             const line = "#7f1d1d"; // dark red outline
             const lineHover = "#ff3b3b"; // brighter red outline on hover
 
-            const clearHover = () => {
-                if (hoveredDistrictId !== null) {
+            const setupHover = (layerId, sourceId) => {
+                let hoveredId = null;
+
+                map.on("mousemove", layerId, (e) => {
+                    const f = e.features?.[0];
+                    console.log("old hoveredId", hoveredId);
+
+                    // clear previous hover
+                    if (hoveredId !== null && hoveredId !== f.id) {
+                        map.setFeatureState(
+                            { source: sourceId, id: hoveredId },
+                            { hover: false }
+                        );
+                    }
+
+                    hoveredId = f?.id;
+                    console.log("curr hoveredId", hoveredId);
+
+                    // set current
                     map.setFeatureState(
-                        {
-                            source: "miami-dade-commission",
-                            id: hoveredDistrictId,
-                        },
-                        { hover: false }
+                        { source: sourceId, id: hoveredId },
+                        { hover: true }
                     );
-                    hoveredDistrictId = null;
-                }
-                map.getCanvas().style.cursor = "";
+                });
+
+                map.on("mouseleave", layerId, () => {
+                    if (hoveredId !== null) {
+                        map.setFeatureState(
+                            {
+                                source: sourceId,
+                                id: hoveredId,
+                            },
+                            {
+                                hover: false,
+                            }
+                        );
+                        hoveredId = null;
+                    }
+                });
             };
+
+            // Add Layers
 
             map.addLayer({
                 id: "mdc-districts-fill",
@@ -144,6 +191,7 @@ export default function Home() {
                     ],
                 },
             });
+
             map.addLayer({
                 id: "mdc-districts-line",
                 type: "line",
@@ -151,47 +199,83 @@ export default function Home() {
                 paint: { "line-color": "#ffa500", "line-width": 1 },
             });
 
-            // When the user moves their mouse over the state-fill layer, we'll update the
-            // feature state for the feature under the mouse.
-            map.on("mousemove", "mdc-districts-fill", (e) => {
-                if (e.features.length > 0) {
-                    if (hoveredDistrictId) {
-                        map.setFeatureState(
-                            {
-                                source: "miami-dade-commission",
-                                id: hoveredDistrictId,
-                            },
-                            { hover: false }
-                        );
-                    }
-                    hoveredDistrictId = e.features[0].id;
-                    map.setFeatureState(
-                        {
-                            source: "miami-dade-commission",
-                            id: hoveredDistrictId,
-                        },
-                        { hover: true }
-                    );
-                }
-            });
+            map.addLayer({
+                id: "census-tracts-line",
+                type: "line",
+                source: "census-tracts",
+                layout: {
+                    visibility: "none",
+                },
+                paint: {
+                    "line-color": "#ffffff",
+                    "line-width": 0.6,
+                    "line-opacity": 0.6,
+                },
+            } as any);
 
-            // When the mouse leaves the state-fill layer, update the feature state of the
-            // previously hovered feature.
-            map.on("mouseleave", "mdc-districts-fills", () => {
-                if (hoveredDistrictId) {
-                    map.setFeatureState(
-                        {
-                            source: "miami-dade-commission",
-                            id: hoveredDistrictId,
-                        },
-                        { hover: false }
-                    );
-                }
-                hoveredDistrictId = null;
-            });
+            map.addLayer({
+                id: "census-tracts-fill",
+                type: "fill",
+                source: "census-tracts",
+                layout: {
+                    visibility: "none",
+                },
+                paint: {
+                    "fill-color": [
+                        "case",
+                        ["boolean", ["feature-state", "hover"], false],
+                        hover, // hover color
+                        base, // normal
+                    ],
+                    "fill-opacity": [
+                        "case",
+                        ["boolean", ["feature-state", "hover"], false],
+                        0.85,
+                        0.3,
+                    ],
+                },
+            } as any);
 
-            // If the mouse leaves the district layer → nothing stays highlighted
-            map.on("mouseleave", "mdc-districts-fill", clearHover);
+            map.addLayer({
+                id: "census-bgs-line",
+                type: "line",
+                source: "census-bgs",
+                layout: {
+                    visibility: "none",
+                },
+                paint: {
+                    "line-color": "#61F527",
+                    "line-width": 1,
+                    "line-opacity": 1,
+                },
+            } as any);
+
+            map.addLayer({
+                id: "census-bgs-fill",
+                type: "fill",
+                source: "census-bgs",
+                layout: {
+                    visibility: "none",
+                },
+                paint: {
+                    "fill-color": [
+                        "case",
+                        ["boolean", ["feature-state", "hover"], false],
+                        hover, // hover color
+                        base, // normal
+                    ],
+                    "fill-opacity": [
+                        "case",
+                        ["boolean", ["feature-state", "hover"], false],
+                        0.85,
+                        0.3,
+                    ],
+                },
+            } as any);
+
+            setupHover("mdc-districts-fill", "miami-dade-commission");
+            setupHover("census-bgs-fill", "census-bgs");
+            setupHover("census-tracts-fill", "census-tracts");
         });
 
         /** Repaints common OpenFreeMap/OpenMapTiles layer ids in dark blues. Safe if a layer is missing. */
@@ -306,9 +390,21 @@ export default function Home() {
             <div className="absolute top-0 left-0 z-50 w-64 border-l p-3 space-y-2 bg-white/80 backdrop-blur">
                 <LayerSwitch
                     label="Districts"
-                    layers={['mdc-districts-fill', 'mdc-districts-line']}
+                    layers={["mdc-districts-fill", "mdc-districts-line"]}
                     getMap={getMap}
                     defaultOn={true}
+                />
+                <LayerSwitch
+                    label="Census Tracts"
+                    layers={["census-tracts-fill", "census-tracts-line"]}
+                    getMap={getMap}
+                    defaultOn={false}
+                />
+                <LayerSwitch
+                    label="Block Groups"
+                    layers={["census-bgs-fill", "census-bgs-line"]}
+                    getMap={getMap}
+                    defaultOn={false}
                 />
             </div>
             <DistrictModal
